@@ -3,6 +3,7 @@ import torch.utils.data as torch_data
 import os
 import numpy as np
 import random
+from collections import Counter
 from tqdm import tqdm
 from augmentations import process_depth_map, augment
 
@@ -48,7 +49,7 @@ class MetaSignGlossDataset(torch_data.Dataset):
     data: list[np.ndarray]
     labels: list[np.ndarray]
 
-    def __init__(self, dataset_dir: str = DATASET_PATH, transform=None, augmentations=False,
+    def __init__(self, dataset_dir: str = DATASET_PATH, num_classes: int =None, transform=None, augmentations=False,
                  augmentations_prob=0.5, normalize=True, pad_to_max=False):
         """
         Initiates the HPOESDataset with the pre-loaded data from the h5 file.
@@ -65,9 +66,32 @@ class MetaSignGlossDataset(torch_data.Dataset):
         self.gloss = list(gloss_to_label.keys())
         self.label_to_gloss = {v: k for k, v in gloss_to_label.items()}
 
+        if num_classes is not None:
+            class_counts = Counter(labels)
+            top_classes = set([cls for cls, _ in class_counts.most_common(num_classes)])
+            
+            filtered_data = []
+            filtered_labels = []
+            
+            for d, l in zip(data, labels):
+                if l in top_classes:
+                    filtered_data.append(d)
+                    filtered_labels.append(l)
+
+            self.data = filtered_data
+            self.labels = filtered_labels
+            self.num_classes = num_classes
+        else:
+            self.data = data
+            self.labels = labels
+            self.num_classes = len(self.gloss)
+        
+        print(f"Number of classes: {self.num_classes}")
+        print(f"Total dataset length: {len(self.data)}")
+
         self.max_seq_len = max(self.data, key=lambda x: x.shape[0]).shape[0]
 
-        self.targets = list(labels)
+        self.targets = list(self.labels)
         self.transform = transform
 
         self.augmentations = augmentations
@@ -82,7 +106,7 @@ class MetaSignGlossDataset(torch_data.Dataset):
         :param idx: Index of the item
         :return: Tuple containing both the depth map and the label
         """
-                
+
         depth_map = torch.from_numpy(np.copy(self.data[idx]))
         l_hand_depth_map, r_hand_depth_map, body_depth_map, _ = process_depth_map(depth_map, self.transform, self.normalize, self.augmentations, self.augmentations_prob)
         label = torch.Tensor([self.labels[idx]])
@@ -93,7 +117,7 @@ class MetaSignGlossDataset(torch_data.Dataset):
         return l_hand_depth_map, r_hand_depth_map, body_depth_map, label
 
     def __len__(self):
-        return len(self.labels)
+        return len(self.data)
 
     def pad_depth_map(self, depth_map):
         pad_size = self.max_seq_len - depth_map.shape[0]

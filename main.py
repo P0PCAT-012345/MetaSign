@@ -54,8 +54,8 @@ if __name__ == "__main__":
     transform = transforms.Compose([GaussianNoise(0, 0.001)])
 
 
-    dataset = MetaSignGlossDataset(transform=transform, augmentations=True, pad_to_max = True)
-    num_classes = len(dataset.gloss)
+    dataset = MetaSignGlossDataset(transform=transform, augmentations=True, pad_to_max = True, num_classes=100)
+    num_classes = len(dataset)
     seq_len = dataset.max_seq_len
 
     train_loader, val_loader = get_dataloader(dataset, generator)
@@ -82,8 +82,8 @@ if __name__ == "__main__":
 
         pbar.set_postfix({
             "Loss": f"{loss:.4f}",
-            "Train Acc": f"{train_accuracy:.2f}%",
-            "Val Acc": f"{val_accuracy:.2f}%"
+            "Train Acc": f"{train_accuracy*100:.2f}%",
+            "Val Acc": f"{val_accuracy*100:.2f}%"
         })
 
         if val_accuracy >= curr_best:
