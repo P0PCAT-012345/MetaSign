@@ -57,7 +57,12 @@ if __name__ == "__main__":
     parser.add_argument("--path", type=str, required=True, help="Dataset path")
     parser.add_argument("--save_at", type=str, default="checkpoints/", help="Save best model at path")
     parser.add_argument("--use_checkpoint", type=str, default="", help="Save best model at path")
-    parser.add_argument("--output_episode_progress", type=bool, default=True, help="Set to False when using jupyter notebook")
+    parser.add_argument(
+        "--output_episode_progress",
+        type=lambda x: x.lower() == 'true',
+        default=True,
+        help="Set to false for Jupyter notebook to avoid excessive tqdm output"
+    )
     args = parser.parse_args()
 
 
