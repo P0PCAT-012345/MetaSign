@@ -8,10 +8,11 @@ import time
 from statistics import mean
 from tqdm import tqdm
 
-def train_epoch(model, dataloader, criterion, optimizer, device, scheduler=None):
+def train_epoch(model, dataloader, criterion, optimizer, device, scheduler=None, output_progress=True):
     pred_correct, pred_all = 0, 0
     running_loss = 0.0
-    for i, data in tqdm(enumerate(dataloader), total=len(dataloader), desc=f"Training...", position=1, leave=False):
+    pbar = tqdm(enumerate(dataloader), total=len(dataloader), desc=f"Training...", position=1, leave=False) if output_progress else enumerate(dataloader)
+    for i, data in pbar:
         l_hands, r_hands, bodies, labels = data
         l_hands = l_hands.to(device)
         r_hands = r_hands.to(device)
@@ -39,11 +40,12 @@ def train_epoch(model, dataloader, criterion, optimizer, device, scheduler=None)
     return running_loss, (pred_correct / pred_all) #5352.4126
 
 
-def evaluate(model, dataloader, device):
+def evaluate(model, dataloader, device, output_progress=True):
     pred_correct, pred_all = 0, 0
 
     with torch.no_grad():
-        for i, data in tqdm(enumerate(dataloader), total=len(dataloader), desc=f"Evaluating...", position=1, leave=False):
+        pbar = tqdm(enumerate(dataloader), total=len(dataloader), desc=f"Evaluating...", position=1, leave=False) if output_progress else enumerate(dataloader)
+        for i, data in pbar:
             l_hands, r_hands, bodies, labels = data
             l_hands = l_hands.to(device)
             r_hands = r_hands.to(device)

@@ -57,6 +57,7 @@ if __name__ == "__main__":
     parser.add_argument("--path", type=str, required=True, help="Dataset path")
     parser.add_argument("--save_at", type=str, default="checkpoints/", help="Save best model at path")
     parser.add_argument("--use_checkpoint", type=str, default="", help="Save best model at path")
+    parser.add_argument("--output_episode_progress", type=bool, default=True, help="Set to False when using jupyter notebook")
     args = parser.parse_args()
 
 
@@ -91,9 +92,10 @@ if __name__ == "__main__":
             criterion=criterion,
             optimizer=optimizer,
             scheduler=scheduler,
-            device=device
+            device=device,
+            output_progress=args.output_episode_progress
         )
-        val_accuracy = evaluate(model=model, dataloader=val_loader, device=device)
+        val_accuracy = evaluate(model=model, dataloader=val_loader, device=device, output_progress=args.output_episode_progress)
 
         pbar.set_postfix({
             "Loss": f"{loss:.4f}",
