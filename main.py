@@ -4,6 +4,9 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Subset
 from torch.utils.data import DataLoader
+import os
+import argparse
+
 
 from sklearn.model_selection import train_test_split
 
@@ -46,15 +49,24 @@ def get_dataloader(train_set, generator):
 
 
 
-
 if __name__ == "__main__":
-    num_epochs = 100
+
+        
+    parser = argparse.ArgumentParser(description="Main training script")
+    parser.add_argument("--num_epochs", type=int, default=350)
+    parser.add_argument("--path", type=str, required=True, help="Dataset path")
+    parser.add_argument("--save_at", type=str, default="checkpoints/", help="Save best model at path")
+    parser.add_argument("--use_checkpoint", type=str, default="", help="Save best model at path")
+    args = parser.parse_args()
+
+
+    num_epochs = args.num_epochs
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     generator = torch.Generator()
     transform = transforms.Compose([GaussianNoise(0, 0.001)])
 
 
-    dataset = MetaSignGlossDataset(transform=transform, augmentations=True, pad_to_max = True, num_classes=100)
+    dataset = MetaSignGlossDataset(dataset_dir=args.path, transform=transform, augmentations=True, pad_to_max = True, num_classes=100)
     num_classes = len(dataset)
     seq_len = dataset.max_seq_len
 
@@ -64,6 +76,9 @@ if __name__ == "__main__":
 
     model = SiFormer(num_classes=num_classes, seq_len=seq_len)
     model.to(device)
+    if args.use_checkpoint:
+        state_dict = torch.load(args.use_checkpoint)
+        model.load_state_dict(state_dict)
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=0.0001, betas=(0.9, 0.999), weight_decay=1e-8)
     scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[60, 80], gamma=0.1)  # 40, 60, 80
@@ -88,4 +103,4 @@ if __name__ == "__main__":
 
         if val_accuracy >= curr_best:
             curr_best = val_accuracy
-            torch.save(model.state_dict(), f"checkpoints/{epoch}_{val_accuracy}")
+            torch.save(model.state_dict(), os.path.join(args.save_at, f"{epoch}_{val_accuracy}"))
