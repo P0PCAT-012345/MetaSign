@@ -5,6 +5,7 @@ import torch.optim as optim
 from torch.utils.data import Subset
 from torch.utils.data import DataLoader
 import os
+import random
 import argparse
 
 
@@ -63,8 +64,18 @@ if __name__ == "__main__":
         default=True,
         help="Set to false for Jupyter notebook to avoid excessive tqdm output"
     )
+    parser.add_argument("--seed", type=int, default=42, help="Dataset path")
     args = parser.parse_args()
 
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    os.environ["PYTHONHASHSEED"] = str(args.seed)
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
+    torch.backends.cudnn.deterministic = True
+    generator = torch.Generator()
+    generator.manual_seed(args.seed)
 
     num_epochs = args.num_epochs
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
