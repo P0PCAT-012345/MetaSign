@@ -53,7 +53,7 @@ if __name__ == "__main__":
         
     transform = transforms.Compose([GaussianNoise(0, 0.001)])
     interp_transform = transforms.Compose([GaussianNoise(0, 0.005)])
-    dataset = SignGlossDataset(transform=transform, max_pad_len=300)
+    dataset = SignGlossDataset(dataset_dir=args.path, transform=transform, max_pad_len=300)
 
     train_dataset, test_dataset = test_train_split(dataset)
     train_loader = get_meta_gloss_dataloader(train_dataset, interpolation_transform=interp_transform)
