@@ -133,7 +133,7 @@ class FeatureIsolatedTransformer(nn.Transformer):
                 memory_mask: Optional[Tensor] = None, src_key_padding_mask: Optional[Tensor] = None,
                 tgt_key_padding_mask: Optional[Tensor] = None, memory_key_padding_mask: Optional[Tensor] = None,
                 src_is_causal: Optional[bool] = None, tgt_is_causal: Optional[bool] = None,
-                memory_is_causal: bool = False, training: bool = True) -> Tensor:
+                memory_is_causal: bool = False) -> Tensor:
 
         full_src = torch.cat(src, dim=-1)
         self.checker(full_src, tgt, full_src.dim() == 3)
@@ -141,9 +141,9 @@ class FeatureIsolatedTransformer(nn.Transformer):
         id = uuid.uuid1()
         # code for concurrency is removed...
         if self.use_IA_encoder:
-            l_hand_memory = self.l_hand_encoder(src[0], mask=src_mask, src_key_padding_mask=src_key_padding_mask, training=training)
-            r_hand_memory = self.r_hand_encoder(src[1], mask=src_mask, src_key_padding_mask=src_key_padding_mask, training=training)
-            body_memory = self.body_encoder(src[2], mask=src_mask, src_key_padding_mask=src_key_padding_mask, training=training)
+            l_hand_memory = self.l_hand_encoder(src[0], mask=src_mask, src_key_padding_mask=src_key_padding_mask)
+            r_hand_memory = self.r_hand_encoder(src[1], mask=src_mask, src_key_padding_mask=src_key_padding_mask)
+            body_memory = self.body_encoder(src[2], mask=src_mask, src_key_padding_mask=src_key_padding_mask)
         else:
             l_hand_memory = self.l_hand_encoder(src[0], mask=src_mask, src_key_padding_mask=src_key_padding_mask)
             r_hand_memory = self.r_hand_encoder(src[1], mask=src_mask, src_key_padding_mask=src_key_padding_mask)
@@ -154,7 +154,7 @@ class FeatureIsolatedTransformer(nn.Transformer):
         if self.use_IA_decoder:
             output = self.decoder(tgt, full_memory, tgt_mask=tgt_mask, memory_mask=memory_mask,
                                   tgt_key_padding_mask=tgt_key_padding_mask,
-                                  memory_key_padding_mask=memory_key_padding_mask, training=training)
+                                  memory_key_padding_mask=memory_key_padding_mask)
         else:
             output = self.decoder(tgt, full_memory, tgt_mask=tgt_mask, memory_mask=memory_mask,
                                   tgt_key_padding_mask=tgt_key_padding_mask,
@@ -185,17 +185,149 @@ class AbsolutePE(nn.Module):
 
 
 
-class SiFormer(nn.Module):
+# class SiFormer(nn.Module):
+#     """
+#     Implementation of the SPOTER (Sign POse-based TransformER) architecture for sign language recognition from sequence
+#     of skeletal data.
+#     """
+
+#     def __init__(self, num_classes, attn_type='prob', num_enc_layers=3, num_dec_layers=2, patience=1,
+#                  seq_len=204, IA_encoder = True, IA_decoder = False, num_channels=3, num_hand_landmarks=21, num_body_landmarks=7, nhead_list=None):
+#         super(SiFormer, self).__init__()
+#         print("Feature isolated transformer")
+#         # self.feature_extractor = FeatureExtractor(num_hid=108, kernel_size=7)
+#         hand_d_model = num_hand_landmarks * num_channels
+#         body_d_model = num_body_landmarks * num_channels
+#         num_hid = hand_d_model*2 + body_d_model
+#         if nhead_list is None:
+#             nhead_list = [3, 3, 3, 7]
+
+#         self.l_hand_embedding = nn.Parameter(self.get_encoding_table(d_model=hand_d_model, seq_len=seq_len))
+#         self.r_hand_embedding = nn.Parameter(self.get_encoding_table(d_model=hand_d_model, seq_len=seq_len))
+#         self.body_embedding = nn.Parameter(self.get_encoding_table(d_model=body_d_model, seq_len=seq_len))
+
+#         self.class_query = nn.Parameter(torch.rand(1, 1, num_hid))
+#         self.transformer = FeatureIsolatedTransformer(
+#             [hand_d_model, hand_d_model, body_d_model], nhead_list, num_encoder_layers=num_enc_layers, num_decoder_layers=num_dec_layers,
+#             selected_attn=attn_type, IA_encoder=IA_encoder, IA_decoder=IA_decoder,
+#             inner_classifiers_config=[num_hid, num_classes], projections_config=[seq_len, 1], 
+#             patience=patience, use_pyramid_encoder=False, distil=False
+#         )
+#         print(f"num_enc_layers {num_enc_layers}, num_dec_layers {num_dec_layers}, patient {patience}")
+#         self.projection = nn.Linear(num_hid, num_classes)
+
+#     def forward(self, l_hand, r_hand, body, training):
+#         batch_size = l_hand.size(0)
+        
+#         new_l_hand = l_hand.view(l_hand.size(0), l_hand.size(1), l_hand.size(2) * l_hand.size(3))
+#         new_r_hand = r_hand.view(r_hand.size(0), r_hand.size(1), r_hand.size(2) * r_hand.size(3))
+#         body = body.view(body.size(0), body.size(1), body.size(2) * body.size(3))
+
+
+#         new_l_hand = new_l_hand.permute(1, 0, 2).type(dtype=torch.float32)
+#         new_r_hand = new_r_hand.permute(1, 0, 2).type(dtype=torch.float32)
+#         new_body = body.permute(1, 0, 2).type(dtype=torch.float32)
+
+#         l_hand_in = new_l_hand + self.l_hand_embedding  # Shape remains the same
+#         r_hand_in = new_r_hand + self.r_hand_embedding  # Shape remains the same
+#         body_in = new_body + self.body_embedding  # Shape remains the same
+        
+#         transformer_output = self.transformer(
+#             [l_hand_in, r_hand_in, body_in], self.class_query.repeat(1, batch_size, 1), training=training
+#         ).transpose(0, 1)
+        
+#         out = self.projection(transformer_output).squeeze()
+#         return out
+
+#     @staticmethod
+#     def get_encoding_table(d_model=108, seq_len=204):
+#         torch.manual_seed(42)
+#         tensor_shape = (seq_len, d_model)
+#         frame_pos = torch.rand(tensor_shape)
+#         for i in range(tensor_shape[0]):
+#             for j in range(1, tensor_shape[1]):
+#                 frame_pos[i, j] = frame_pos[i, j - 1]
+#         frame_pos = frame_pos.unsqueeze(1)  # (seq_len, 1, feature_size): (204, 1, 108)
+#         return frame_pos
+
+
+
+
+# class SiFormerMeta(nn.Module):
+#     """
+#     Implementation of the SPOTER (Sign POse-based TransformER) architecture for sign language recognition from sequence
+#     of skeletal data.
+#     """
+
+#     def __init__(self, emb_dim, attn_type='prob', num_enc_layers=3, num_dec_layers=2, patience=1,
+#                  seq_len=204, IA_encoder = True, IA_decoder = False, num_channels=3, num_hand_landmarks=21, num_body_landmarks=7, nhead_list=None):
+#         super(SiFormerMeta, self).__init__()
+#         print("Feature isolated transformer")
+#         hand_d_model = num_hand_landmarks * num_channels
+#         body_d_model = num_body_landmarks * num_channels
+#         num_hid = hand_d_model*2 + body_d_model
+#         if nhead_list is None:
+#             nhead_list = [3, 3, 3, 7]
+
+#         self.l_hand_embedding = nn.Parameter(self.get_encoding_table(d_model=hand_d_model, seq_len=seq_len))
+#         self.r_hand_embedding = nn.Parameter(self.get_encoding_table(d_model=hand_d_model, seq_len=seq_len))
+#         self.body_embedding = nn.Parameter(self.get_encoding_table(d_model=body_d_model, seq_len=seq_len))
+
+#         self.class_query = nn.Parameter(torch.rand(1, 1, num_hid))
+#         self.transformer = FeatureIsolatedTransformer(
+#             [hand_d_model, hand_d_model, body_d_model], nhead_list, num_encoder_layers=num_enc_layers, num_decoder_layers=num_dec_layers,
+#             selected_attn=attn_type, IA_encoder=IA_encoder, IA_decoder=IA_decoder,
+#             inner_classifiers_config=[num_hid, emb_dim], projections_config=[seq_len, 1], 
+#             patience=patience, use_pyramid_encoder=False, distil=False
+#         )
+#         print(f"num_enc_layers {num_enc_layers}, num_dec_layers {num_dec_layers}, patient {patience}")
+#         self.projection = nn.Linear(num_hid, emb_dim)
+
+#     def forward(self, l_hand, r_hand, body, training=True):
+#         batch_size = l_hand.size(0)
+        
+#         new_l_hand = l_hand.view(l_hand.size(0), l_hand.size(1), l_hand.size(2) * l_hand.size(3))
+#         new_r_hand = r_hand.view(r_hand.size(0), r_hand.size(1), r_hand.size(2) * r_hand.size(3))
+#         body = body.view(body.size(0), body.size(1), body.size(2) * body.size(3))
+
+
+#         new_l_hand = new_l_hand.permute(1, 0, 2).type(dtype=torch.float32)
+#         new_r_hand = new_r_hand.permute(1, 0, 2).type(dtype=torch.float32)
+#         new_body = body.permute(1, 0, 2).type(dtype=torch.float32)
+
+#         l_hand_in = new_l_hand + self.l_hand_embedding  # Shape remains the same
+#         r_hand_in = new_r_hand + self.r_hand_embedding  # Shape remains the same
+#         body_in = new_body + self.body_embedding  # Shape remains the same
+        
+#         transformer_output = self.transformer(
+#             [l_hand_in, r_hand_in, body_in], self.class_query.repeat(1, batch_size, 1), training=training
+#         ).transpose(0, 1)
+        
+#         out = self.projection(transformer_output).squeeze()
+#         return out
+
+#     @staticmethod
+#     def get_encoding_table(d_model=108, seq_len=204):
+#         torch.manual_seed(42)
+#         tensor_shape = (seq_len, d_model)
+#         frame_pos = torch.rand(tensor_shape)
+#         for i in range(tensor_shape[0]):
+#             for j in range(1, tensor_shape[1]):
+#                 frame_pos[i, j] = frame_pos[i, j - 1]
+#         frame_pos = frame_pos.unsqueeze(1)  # (seq_len, 1, feature_size): (204, 1, 108)
+#         return frame_pos
+
+
+class SiFormerMeta(nn.Module):
     """
     Implementation of the SPOTER (Sign POse-based TransformER) architecture for sign language recognition from sequence
     of skeletal data.
     """
 
-    def __init__(self, num_classes, attn_type='prob', num_enc_layers=3, num_dec_layers=2, patience=1,
+    def __init__(self, emb_dim, attn_type='prob', num_enc_layers=3, num_dec_layers=2, patience=1, max_class_per_input=5,
                  seq_len=204, IA_encoder = True, IA_decoder = False, num_channels=3, num_hand_landmarks=21, num_body_landmarks=7, nhead_list=None):
-        super(SiFormer, self).__init__()
+        super(SiFormerMeta, self).__init__()
         print("Feature isolated transformer")
-        # self.feature_extractor = FeatureExtractor(num_hid=108, kernel_size=7)
         hand_d_model = num_hand_landmarks * num_channels
         body_d_model = num_body_landmarks * num_channels
         num_hid = hand_d_model*2 + body_d_model
@@ -206,37 +338,54 @@ class SiFormer(nn.Module):
         self.r_hand_embedding = nn.Parameter(self.get_encoding_table(d_model=hand_d_model, seq_len=seq_len))
         self.body_embedding = nn.Parameter(self.get_encoding_table(d_model=body_d_model, seq_len=seq_len))
 
-        self.class_query = nn.Parameter(torch.rand(1, 1, num_hid))
+        self.max_class_per_input = max_class_per_input
+        self.class_queries = nn.Parameter(torch.rand(self.max_class_per_input, 1, num_hid))
         self.transformer = FeatureIsolatedTransformer(
             [hand_d_model, hand_d_model, body_d_model], nhead_list, num_encoder_layers=num_enc_layers, num_decoder_layers=num_dec_layers,
             selected_attn=attn_type, IA_encoder=IA_encoder, IA_decoder=IA_decoder,
-            inner_classifiers_config=[num_hid, num_classes], projections_config=[seq_len, 1], 
+            inner_classifiers_config=[num_hid, emb_dim], projections_config=[seq_len, 1], 
             patience=patience, use_pyramid_encoder=False, distil=False
         )
         print(f"num_enc_layers {num_enc_layers}, num_dec_layers {num_dec_layers}, patient {patience}")
-        self.projection = nn.Linear(num_hid, num_classes)
+        self.projection = nn.Sequential(
+            nn.Linear(num_hid, emb_dim),
+            nn.LayerNorm(emb_dim)
+        )
 
-    def forward(self, l_hand, r_hand, body, training):
+    def forward(self, l_hand, r_hand, body):
         batch_size = l_hand.size(0)
-        
-        new_l_hand = l_hand.view(l_hand.size(0), l_hand.size(1), l_hand.size(2) * l_hand.size(3))
-        new_r_hand = r_hand.view(r_hand.size(0), r_hand.size(1), r_hand.size(2) * r_hand.size(3))
-        body = body.view(body.size(0), body.size(1), body.size(2) * body.size(3))
 
+        # Flatten landmark dimension: (B, T, landmarks, C) -> (B, T, landmarks*C)
+        new_l_hand = l_hand.view(batch_size, l_hand.size(1), -1)
+        new_r_hand = r_hand.view(batch_size, r_hand.size(1), -1)
+        new_body = body.view(batch_size, body.size(1), -1)
 
-        new_l_hand = new_l_hand.permute(1, 0, 2).type(dtype=torch.float32)
-        new_r_hand = new_r_hand.permute(1, 0, 2).type(dtype=torch.float32)
-        new_body = body.permute(1, 0, 2).type(dtype=torch.float32)
+        # Padding mask creation: (B, T)
+        # A timestep is considered "padded" if all its features are zero
+        l_hand_mask = (new_l_hand.abs().sum(dim=-1) == 0)  # True where padded
+        r_hand_mask = (new_r_hand.abs().sum(dim=-1) == 0)
+        body_mask   = (new_body.abs().sum(dim=-1) == 0)
 
-        l_hand_in = new_l_hand + self.l_hand_embedding  # Shape remains the same
-        r_hand_in = new_r_hand + self.r_hand_embedding  # Shape remains the same
-        body_in = new_body + self.body_embedding  # Shape remains the same
-        
+        # Merge masks (logical AND): only mark as padded if ALL modalities are padded at that time step
+        src_key_padding_mask = l_hand_mask & r_hand_mask & body_mask  # (B, T)
+
+        # Permute to (T, B, F) for transformer
+        new_l_hand = new_l_hand.permute(1, 0, 2).float()
+        new_r_hand = new_r_hand.permute(1, 0, 2).float()
+        new_body = new_body.permute(1, 0, 2).float()
+
+        # Add learned positional embeddings
+        l_hand_in = new_l_hand + self.l_hand_embedding
+        r_hand_in = new_r_hand + self.r_hand_embedding
+        body_in = new_body + self.body_embedding
+
+        repeated_queries = self.class_queries.repeat(1, batch_size, 1)
+
         transformer_output = self.transformer(
-            [l_hand_in, r_hand_in, body_in], self.class_query.repeat(1, batch_size, 1), training=training
-        ).transpose(0, 1)
-        
-        out = self.projection(transformer_output).squeeze()
+            [l_hand_in, r_hand_in, body_in], repeated_queries, src_key_padding_mask=src_key_padding_mask  # (B, T) mask
+        ).transpose(0, 1)  # (B, num_signs, hidden_dim)
+
+        out = self.projection(transformer_output)  # (num_signs, B, emb_dim)
         return out
 
     @staticmethod
@@ -249,3 +398,49 @@ class SiFormer(nn.Module):
                 frame_pos[i, j] = frame_pos[i, j - 1]
         frame_pos = frame_pos.unsqueeze(1)  # (seq_len, 1, feature_size): (204, 1, 108)
         return frame_pos
+
+
+def pairwise_distances(x, y):
+    # x: (N, D), y: (M, D)
+    n = x.size(0)
+    m = y.size(0)
+    d = x.size(1)
+    x = x.unsqueeze(1).expand(n, m, d)
+    y = y.unsqueeze(0).expand(n, m, d)
+    return torch.norm(x - y, dim=2)
+
+class MetaLearning(nn.Module):
+    """
+    Custom meta-learning framework in sign language recognition.
+    """
+
+    def __init__(self, backbone, n_support = 3, n_query = 3, n_way = 10, max_word = 3):
+        super(MetaLearning, self).__init__()
+        self.backbone = backbone
+        self.n_support = n_support
+        self.n_query = n_query
+        self.n_way = n_way
+        self.max_word = max_word
+        self.dist_threshold = nn.Parameter(torch.tensor([5.0]))
+    
+
+    def forward(self, l_support, r_support, b_support, l_query, r_query, b_query):
+
+        support_embeddings = self.backbone(l_support, r_support, b_support)
+        support_embeddings = support_embeddings[:, 0, :]
+
+        prototypes = torch.mean(support_embeddings.view(self.n_way, self.n_support, -1), dim=1)
+
+        query_embeddings = self.backbone(l_query, r_query, b_query) # (K, words, emb_dim)
+
+        K, *_ = query_embeddings.shape
+        dists = pairwise_distances(query_embeddings.view(K*self.max_word, -1), prototypes)
+
+        thresholds = self.dist_threshold.expand(K, self.max_word, 1)
+
+        dists_with_threshold = torch.cat([dists.view(K, self.max_word, -1), thresholds], dim=2) #(K, words, num_classes + 1)
+
+        logits = -dists_with_threshold.view(K*self.max_word, self.n_way + 1)
+
+
+        return logits

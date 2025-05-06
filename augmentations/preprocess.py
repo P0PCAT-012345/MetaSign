@@ -6,8 +6,6 @@ from augmentations.augmentations import augment_rotate, augment_shear, augment_a
 
 
 
-
-
 def normalize_depth_map(input):
     """
     Normalize input with shape (T, N, 2) where T is the number of frames,
@@ -55,30 +53,19 @@ def normalize_depth_map(input):
     return normalized
 
 
-def augment(depth_map, augmentations_prob = 0.5):
-    if random.random() < augmentations_prob:
+def augment(depth_map):
+    depth_map[:, :, :2] = augment_rotate(depth_map[:, :, :2], (-13, 13))
 
-        selected_aug = randrange(5)
+    depth_map[:, :, :2] = augment_shear(depth_map[:, :, :2], "perspective", (0, 0.1))
 
-        if selected_aug == 0:
-            depth_map[:, :, :2] = augment_rotate(depth_map[:, :, :2], (-13, 13))
+    depth_map[:, :, :2] = augment_shear(depth_map[:, :, :2], "squeeze", (0, 0.15))
 
-        if selected_aug == 1:
-            depth_map[:, :, :2] = augment_shear(depth_map[:, :, :2], "perspective", (0, 0.1))
-
-        if selected_aug == 2:
-            depth_map[:, :, :2] = augment_shear(depth_map[:, :, :2], "squeeze", (0, 0.15))
-
-        if selected_aug == 3:
-            depth_map[:, :, :2] = augment_arm_joint_rotate(depth_map[:, :, :2], 0.3, (-4, 4))
-
-        if selected_aug == 4:
-            depth_map = depth_map
+    depth_map[:, :, :2] = augment_arm_joint_rotate(depth_map[:, :, :2], 0.3, (-4, 4))
 
     return depth_map
 
 
-def process_depth_map(depth_map, transform=None, normalize=True, augmentations=False, augmentations_prob = 0.5):
+def process_depth_map(depth_map, transform=None, normalize=True, augmentations=False):
     """
     Processes the depth map by applying the specified transformations and normalizations.
 
@@ -97,7 +84,7 @@ def process_depth_map(depth_map, transform=None, normalize=True, augmentations=F
 
     depth_masks = [l_hand_depth_mask, r_hand_depth_mask, body_depth_mask]
     
-    depth_map = augment(depth_map, augmentations_prob) if augmentations else depth_map
+    depth_map = augment(depth_map) if augmentations else depth_map
             
     l_hand_depth_map = depth_map[:, LEFT_HANDS_IDX, :]
     r_hand_depth_map = depth_map[:, RIGHT_HANDS_IDX, :]

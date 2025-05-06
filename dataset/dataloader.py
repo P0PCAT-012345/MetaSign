@@ -1,11 +1,16 @@
 import torch
 import torch.utils.data as torch_data
+from torch.utils.data import DataLoader
+from torch.utils.data import Subset, Dataset
+
 import os
 import numpy as np
 import random
-from collections import Counter
+from collections import Counter, defaultdict
 from tqdm import tqdm
 from augmentations import process_depth_map, augment
+from sklearn.model_selection import train_test_split
+from typing import List, Dict, Tuple
 
 
 
@@ -21,8 +26,10 @@ def load_dataset(dataset_dir: str = DATASET_PATH) -> tuple[list[np.ndarray], lis
     :return: Tuple containing the data and labels
     """
     data = []
-    gloss_to_label = dict()
+    class_to_indices = defaultdict(list)
+    gloss_to_class = dict()
     labels = []
+    curr_idx = 0
 
     for file in tqdm(os.listdir(dataset_dir), desc="Loading dataset", total=len(os.listdir(dataset_dir))):
         if file.endswith('.npy'):
@@ -31,62 +38,47 @@ def load_dataset(dataset_dir: str = DATASET_PATH) -> tuple[list[np.ndarray], lis
 
             data.append(loaded_data['landmark'])
             gloss = loaded_data['label']
+
+            if not gloss in gloss_to_class:
+                gloss_to_class[gloss] = len(gloss_to_class)
+            label = gloss_to_class[gloss]
+
+            class_to_indices[label].append(curr_idx)
+            curr_idx += 1
             
-            if gloss not in gloss_to_label.keys():
-                gloss_to_label[gloss] = len(gloss_to_label)
-            labels.append(gloss_to_label[gloss])
+            labels.append(label)
 
 
-    return data, labels, gloss_to_label
+    return data, labels, class_to_indices, gloss_to_class
 
 
 
 
-class MetaSignGlossDataset(torch_data.Dataset):
-    """Advanced object representation of the HPOES dataset for loading hand joints landmarks utilizing the Torch's
+class SignGlossDataset(torch_data.Dataset):
+    """Advanced object representation of the WLASL dataset for loading hand joints landmarks utilizing the Torch's
     built-in Dataset properties"""
 
     data: list[np.ndarray]
     labels: list[np.ndarray]
 
-    def __init__(self, dataset_dir: str = DATASET_PATH, num_classes: int =None, transform=None, augmentations=False,
-                 augmentations_prob=0.5, normalize=True, pad_to_max=False):
+    def __init__(self, dataset_dir: str = DATASET_PATH, transform=None, augmentations=False, normalize=True, pad_to_max=False):
         """
-        Initiates the HPOESDataset with the pre-loaded data from the h5 file.
+        Initiates the WLASLDataset with the pre-loaded data from the numpy file.
 
-        :param dataset_filename: Path to the h5 file
+        :param dataset_filename: Path to the numpy file
         :param transform: Any data transformation to be applied (default: None)
         """
 
-        data, labels, gloss_to_label  = load_dataset(dataset_dir=dataset_dir)
+        data, labels, class_to_indices, gloss_to_class  = load_dataset(dataset_dir=dataset_dir)
 
         self.data = data
         self.labels = labels
-        self.gloss_to_label = gloss_to_label
-        self.gloss = list(gloss_to_label.keys())
-        self.label_to_gloss = {v: k for k, v in gloss_to_label.items()}
-
-        if num_classes is not None:
-            class_counts = Counter(labels)
-            top_classes = set([cls for cls, _ in class_counts.most_common(num_classes)])
-            
-            filtered_data = []
-            filtered_labels = []
-            
-            for d, l in zip(data, labels):
-                if l in top_classes:
-                    filtered_data.append(d)
-                    filtered_labels.append(l)
-
-            self.data = filtered_data
-            self.labels = filtered_labels
-            self.num_classes = num_classes
-        else:
-            self.data = data
-            self.labels = labels
-            self.num_classes = len(self.gloss)
+        self.class_to_indices = class_to_indices
+        self.gloss_to_class = gloss_to_class
+        self.classes = list(self.class_to_indices.keys())
         
-        print(f"Number of classes: {self.num_classes}")
+        
+        print(f"Number of classes: {len(self.classes)}")
         print(f"Total dataset length: {len(self.data)}")
 
         self.max_seq_len = max(self.data, key=lambda x: x.shape[0]).shape[0]
@@ -95,7 +87,6 @@ class MetaSignGlossDataset(torch_data.Dataset):
         self.transform = transform
 
         self.augmentations = augmentations
-        self.augmentations_prob = augmentations_prob
         self.normalize = normalize
         self.pad_to_max = pad_to_max
 
@@ -126,134 +117,178 @@ class MetaSignGlossDataset(torch_data.Dataset):
         return depth_map
 
 
-
-
-
-
-class MetaSignSentenceDataset(torch_data.Dataset):
-    """Advanced object representation of the HPOES dataset for loading hand joints landmarks utilizing the Torch's
-    built-in Dataset properties"""
-
-    data: list[np.ndarray]
-    labels: list[np.ndarray]
-
-    def __init__(self, dataset_dir: str = DATASET_PATH, num_episodes = 1000, total_frames=100, interpolation_step=(5,15), 
-                 transform=None, augmentations=False, augmentations_prob=0.5, normalize=True):
+class EpisodicBatchSampler(torch_data.Sampler):
+    """
+    Samples batches in the form of episodes for few-shot learning tasks.
+    """
+    
+    def __init__(self, class_to_indices: Dict, n_way: int, n_support: int, n_query: int, 
+                 num_episodes: int, shuffle: bool = True):
         """
-        Initiates the HPOESDataset with the pre-loaded data from the h5 file.
-
-        :param dataset_filename: Path to the h5 file
-        :param transform: Any data transformation to be applied (default: None)
+        Args:
+            class_to_indices: Dictionary mapping each class to its sample indices
+            n_way: Number of classes per episode
+            n_support: Number of support examples per class
+            n_query: Number of query examples per class
+            num_episodes: Number of episodes per epoch
+            shuffle: Whether to shuffle the classes when creating episodes
         """
-
-        data, labels, gloss_to_label  = load_dataset(dataset_dir=dataset_dir)
-
-        self.data = data
-        self.labels = labels
-        self.gloss_to_label = gloss_to_label
-        self.gloss = list(gloss_to_label.keys())
-        self.label_to_gloss = {v: k for k, v in gloss_to_label.items()}
-        
+        self.class_to_indices = class_to_indices
+        self.n_way = n_way
+        self.n_support = n_support
+        self.n_query = n_query
         self.num_episodes = num_episodes
-        self.total_frames = total_frames
-        self.interpolation_step = interpolation_step
-        self.transform = transform
-
-        self.augmentations = augmentations
-        self.augmentations_prob = augmentations_prob
-        self.normalize = normalize
-
-    def get_gloss(self, idx):
-        depth_map = torch.from_numpy(np.copy(self.data[idx]))
-        l_hand_depth_map, r_hand_depth_map, body_depth_map, mask = process_depth_map(depth_map, self.transform, self.normalize, self.augmentations, self.augmentations_prob)
-        label = torch.Tensor([self.labels[idx]])
-
-        return l_hand_depth_map, r_hand_depth_map, body_depth_map, label, mask
-    
-    def __getitem__(self, _):
-        l_hand_sequence, r_hand_sequence, body_sequence = [], [], []
-        sentence_labels = []
+        self.shuffle = shuffle
+        self.classes = list(class_to_indices.keys())
         
-        total_frames = 0
-
-        l_hand, r_hand, body, label, mask = self.get_gloss(random.randint(0, len(self.labels) - 1))
-        cut_off = random.randint(0, len(l_hand))
-
-        l_hand_sequence.append(l_hand[cut_off:])
-        r_hand_sequence.append(r_hand[cut_off:])
-        body_sequence.append(body[cut_off:])
-        sentence_labels.append(label)
-        total_frames += len(l_hand) - cut_off
-
-        last_visibilities = [m[-1] for m in mask]
-
-        while total_frames < self.total_frames:
-            next_idx = random.randint(0, len(self.labels) - 1)
-            l_next, r_next, body_next, label_next, mask_next = self.get_gloss(next_idx)
-            first_visibilities = [m[0] for m in mask_next]
-
-            interp_steps = random.randint(self.interpolation_step[0], self.interpolation_step[1])
-    
-            l_hand_sequence.append(self.slerp(l_hand[-1], l_next[0], interp_steps, transform=self.transform, augmentations=self.augmentations, augmentations_prob=self.augmentations_prob) if last_visibilities[0] and first_visibilities[0] else torch.zeros((interp_steps, l_hand.shape[1], l_hand.shape[2])))
-            r_hand_sequence.append(self.slerp(r_hand[-1], r_next[0], interp_steps, transform=self.transform, augmentations=self.augmentations, augmentations_prob=self.augmentations_prob) if last_visibilities[1] and first_visibilities[1] else torch.zeros((interp_steps, r_hand.shape[1], r_hand.shape[2])))
-            body_sequence.append(self.slerp(body[-1], body[0], interp_steps, transform=self.transform, augmentations=self.augmentations, augmentations_prob=self.augmentations_prob) if last_visibilities[2] and first_visibilities[2] else torch.zeros((interp_steps, body.shape[1], body.shape[2])))
-            
-            total_frames += interp_steps
-
-            l_hand_sequence.append(l_next)
-            r_hand_sequence.append(r_next)
-            body_sequence.append(body_next)
-
-            sentence_labels.append(label_next)
-
-            total_frames += len(l_next)
-
-            last_visibilities = [m[-1] for m in mask_next]
-
-
-        l_hand_sequence = torch.cat(l_hand_sequence, dim=0)[:self.total_frames]
-        r_hand_sequence = torch.cat(r_hand_sequence, dim=0)[:self.total_frames]
-        body_sequence = torch.cat(body_sequence, dim=0)[:self.total_frames]
-
-        sentence_labels = torch.tensor(sentence_labels)
-
-        return l_hand_sequence, r_hand_sequence, body_sequence, sentence_labels
-
-
-    def slerp(self, v0, v1, steps, transform=None, augmentations=True, augmentations_prob=0.5):
-        """
-        Spherical linear interpolation between two points.
-
-        :param start: Start point
-        :param end: End point
-        :param steps: Number of steps
-        :return: Interpolated points
-        """
-        t = torch.linspace(0, 1, steps + 2, device=v0.device)[1:-1]
-        v0_norm = v0 / v0.norm(dim=-1, keepdim=True).clamp(min=1e-8)
-        v1_norm = v1 / v1.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+        # Verify we have enough classes and examples per class
+        if len(self.classes) < self.n_way:
+            raise ValueError(f"Dataset has only {len(self.classes)} classes, but n_way={self.n_way}")
         
-        dot = (v0_norm * v1_norm).sum(dim=-1).clamp(-1.0, 1.0)  # (N,)
-        omega = torch.acos(dot)  # (N,)
-        sin_omega = torch.sin(omega).clamp(min=1e-8)  # (N,)
-
-            
-        t = t.to(v0.device).view(-1, 1, 1)  # (steps, 1, 1)
-
-        omega = omega.unsqueeze(0).unsqueeze(-1)  # (1, N, 1)
-        sin_omega = sin_omega.unsqueeze(0).unsqueeze(-1)  # (1, N, 1)
-
-        v0 = v0.unsqueeze(0)  # (1, N, 2)
-        v1 = v1.unsqueeze(0)  # (1, N, 2)
-
-        term1 = torch.sin((1.0 - t) * omega) / sin_omega * v0
-        term2 = torch.sin(t * omega) / sin_omega * v1
-
-        result = term1 + term2
-        result = augment(result, augmentations_prob) if augmentations else result
-        result = transform(result) if transform else result
-        
-        return result
+        for class_idx in self.classes:
+            class_indices = self.class_to_indices[class_idx]
+            if len(class_indices) < (self.n_support + self.n_query):
+                raise ValueError(f"Class {class_idx} has only {len(class_indices)} examples, "
+                                f"but need {self.n_support + self.n_query}")
     
-    def __len__(self):
+    def __len__(self) -> int:
+        """Return the number of episodes per epoch."""
         return self.num_episodes
+    
+    def __iter__(self):
+        """
+        Yield indices for each episode.
+        """
+        for _ in range(self.num_episodes):
+            episode_indices = []
+            
+            # Randomly sample classes for the episode
+            episode_classes = random.sample(self.classes, self.n_way)
+            
+            # For each class, select support and query examples
+            for class_label in episode_classes:
+                indices = self.class_to_indices[class_label]
+                # Sample without replacement
+                sampled_indices = random.sample(indices, self.n_support + self.n_query)
+                episode_indices.extend(sampled_indices)
+            
+            # Yield the indices for this episode
+            yield episode_indices
+
+
+# Define the collate function outside of any other function to make it picklable
+def episodic_collate_fn(batch: List, n_way: int, n_support: int, n_query: int) -> Tuple:
+    """
+    Custom collate function for episodic few-shot learning.
+    
+    Args:
+        batch: List of samples from the dataset
+        n_way: Number of classes per episode
+        n_support: Number of support examples per class
+        n_query: Number of query examples per class
+        
+    Returns:
+        Tuple containing:
+            - Support set as tuple of (l_hand, r_hand, body) tensors
+            - Support labels tensor
+            - Query set as tuple of (l_hand, r_hand, body) tensors
+            - Query labels tensor
+    """
+    # Total samples per class
+    samples_per_class = n_support + n_query
+    
+    # Get the input tensors
+    l_hand_tensors = [sample[0] for sample in batch]
+    r_hand_tensors = [sample[1] for sample in batch]
+    body_tensors = [sample[2] for sample in batch]
+    labels = [sample[3] for sample in batch]
+    
+    # Create new labels using the order of appearance (0 to n_way-1)
+    original_labels = torch.cat(labels).view(-1).tolist()
+    unique_labels = []
+    for label in original_labels:
+        if label not in unique_labels:
+            unique_labels.append(label)
+    
+    label_mapping = {original: i for i, original in enumerate(unique_labels[:n_way])}
+    new_labels = [label_mapping[original.item()] for original in torch.cat(labels)]
+    
+    # Split into support and query sets
+    support_indices = []
+    query_indices = []
+    
+    for i in range(n_way):
+        class_indices = [idx for idx, label in enumerate(new_labels) if label == i]
+        support_indices.extend(class_indices[:n_support])
+        query_indices.extend(class_indices[n_support:samples_per_class])
+    
+    # Create support set
+    l_support = torch.stack([l_hand_tensors[i] for i in support_indices])
+    r_support = torch.stack([r_hand_tensors[i] for i in support_indices])
+    b_support = torch.stack([body_tensors[i] for i in support_indices])
+    support_labels = torch.tensor([new_labels[i] for i in support_indices], dtype=torch.long)
+    
+    # Create query set
+    l_query = torch.stack([l_hand_tensors[i] for i in query_indices])
+    r_query = torch.stack([r_hand_tensors[i] for i in query_indices])
+    b_query = torch.stack([body_tensors[i] for i in query_indices])
+    query_labels = torch.tensor([new_labels[i] for i in query_indices], dtype=torch.long)
+    
+    return (l_support, r_support, b_support), support_labels, (l_query, r_query, b_query), query_labels
+
+
+# Define a separate class for the collate function to make it fully picklable
+class EpisodicCollator:
+    def __init__(self, n_way, n_support, n_query):
+        self.n_way = n_way
+        self.n_support = n_support
+        self.n_query = n_query
+    
+    def __call__(self, batch):
+        return episodic_collate_fn(batch, self.n_way, self.n_support, self.n_query)
+
+
+def get_meta_gloss_dataloader(dataset, n_way=10, n_support=3, n_query=3, num_episodes=100, 
+                           num_workers=4, pin_memory=True):
+    """
+    Create a PyTorch DataLoader with custom episodic sampling.
+    
+    Args:
+        dataset: SignGlossDataset instance
+        n_way: Number of classes per episode
+        n_support: Number of support examples per class
+        n_query: Number of query examples per class
+        num_episodes: Number of episodes per epoch
+        num_workers: Number of worker processes for parallel loading
+        pin_memory: Whether to pin memory to GPU for faster transfer
+        
+    Returns:
+        PyTorch DataLoader instance
+    """
+    # Create the batch sampler
+    batch_sampler = EpisodicBatchSampler(
+        class_to_indices=dataset.class_to_indices,
+        n_way=n_way,
+        n_support=n_support,
+        n_query=n_query,
+        num_episodes=num_episodes
+    )
+    
+    # Create a picklable collate function using the EpisodicCollator class
+    collate_fn = EpisodicCollator(n_way, n_support, n_query)
+    
+    # Create and return the DataLoader
+    return torch_data.DataLoader(
+        dataset=dataset,
+        batch_sampler=batch_sampler,
+        num_workers=num_workers,
+        collate_fn=collate_fn,
+        pin_memory=pin_memory
+    )
+
+
+
+
+
+
+
