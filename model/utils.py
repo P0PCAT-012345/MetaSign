@@ -7,6 +7,7 @@ import torch.nn.functional as F
 import time
 from statistics import mean
 from tqdm import tqdm
+from collections import defaultdict
 
 # def train_epoch(model, dataloader, criterion, optimizer, device, scheduler=None, output_progress=True):
 #     pred_correct, pred_all = 0, 0
@@ -127,13 +128,11 @@ def train_epoch(model, dataloader, optimizer, device, scheduler=None, output_pro
 
         logits = model(l_support, r_support, b_support, l_query, r_query, b_query)
 
-        loss = F.cross_entropy(logits, query_labels.view(-1))
+        loss = model.calculate_loss(logits, query_labels)
+        c, t = model.calculate_accuracy(logits, query_labels)
+        correct += c
+        total += t
 
-        with torch.no_grad():
-            preds = torch.argmax(logits, dim=1)
-            correct += (preds == query_labels.view(-1)).sum().item()
-            total += query_labels.size(0)*query_labels.size(1)
-        
         loss.backward()
         optimizer.step()
         running_loss += loss.item()
@@ -155,8 +154,35 @@ def evaluate(model, dataloader, device, output_progress=True):
         l_support, r_support, b_support, support_labels, l_query, r_query, b_query, query_labels = [d.to(device) for d in data]
 
         logits = model(l_support, r_support, b_support, l_query, r_query, b_query)
-        preds = torch.argmax(logits, dim=1)
-        correct += (preds == query_labels.view(-1)).sum().item()
-        total += query_labels.size(0)*query_labels.size(1)
+        c, t = model.calculate_accuracy(logits, query_labels)
+        correct += c
+        total += t
+        
 
     return correct / total
+
+
+# @torch.no_grad()
+# def analyze(model, dataloader, device, output_progress=True):
+#     model.eval()
+
+#     pbar = tqdm(enumerate(dataloader), total=len(dataloader), desc=f"Evaluating...", position=1, leave=False) if output_progress else enumerate(dataloader)
+#     total = 0
+#     correct_per_words = torch.tensor([0, 0, 0], device=device)
+#     correct_per_label = defaultdict(int)
+#     total_per_label = defaultdict(int)
+
+#     for i, data in pbar:
+#         l_support, r_support, b_support, support_labels, l_query, r_query, b_query, query_labels = [d.to(device) for d in data]
+#         K = l_query.shape[0]
+        
+#         logits = model(l_support, r_support, b_support, l_query, r_query, b_query)
+#         c, t = model.calculate_accuracy(logits, query_labels)
+#         correct += c
+#         total += t
+
+#     accuracy_per_label = defaultdict(int)
+#     for (idx, correct), total in zip(correct_per_label.items(), total_per_label.values()):
+#         accuracy_per_label[idx.item()] = correct/total
+
+#     return correct_per_words / total, accuracy_per_label

@@ -414,14 +414,14 @@ class MetaLearning(nn.Module):
     Custom meta-learning framework in sign language recognition.
     """
 
-    def __init__(self, backbone, n_support = 3, n_query = 3, n_way = 10, max_word = 3):
+    def __init__(self, backbone, n_support = 3, n_query = 3, n_way = 10, max_candidates = 3):
         super(MetaLearning, self).__init__()
         self.backbone = backbone
         self.n_support = n_support
         self.n_query = n_query
         self.n_way = n_way
-        self.max_word = max_word
-        self.dist_threshold = nn.Parameter(torch.tensor([5.0]))
+        self.max_candidates = max_candidates
+        self.temperature = 0.1
     
 
     def forward(self, l_support, r_support, b_support, l_query, r_query, b_query):
@@ -434,13 +434,49 @@ class MetaLearning(nn.Module):
         query_embeddings = self.backbone(l_query, r_query, b_query) # (K, words, emb_dim)
 
         K, *_ = query_embeddings.shape
-        dists = pairwise_distances(query_embeddings.view(K*self.max_word, -1), prototypes)
+        dists = pairwise_distances(query_embeddings.view(K*self.max_candidates, -1), prototypes)
 
-        thresholds = self.dist_threshold.expand(K, self.max_word, 1)
-
-        dists_with_threshold = torch.cat([dists.view(K, self.max_word, -1), thresholds], dim=2) #(K, words, num_classes + 1)
-
-        logits = -dists_with_threshold.view(K*self.max_word, self.n_way + 1)
-
+        logits = -dists.view(K, self.max_candidates, -1)
 
         return logits
+    
+    def calculate_loss(self, logits, query_labels):
+        B, K, C = logits.shape
+
+        log_probs = F.log_softmax(logits, dim=-1)  # (B, K, C)
+
+        # Compute CE loss to each label separately
+        label_1 = query_labels[:, 0].unsqueeze(1).expand(-1, K)  # (B, K)
+        label_2 = query_labels[:, 1].unsqueeze(1).expand(-1, K)  # (B, K)
+
+        # Gather NLL loss for each label
+        loss_1 = F.nll_loss(log_probs.view(-1, C), label_1.flatten(), reduction='none').view(B, K)
+        loss_2 = F.nll_loss(log_probs.view(-1, C), label_2.flatten(), reduction='none').view(B, K)
+
+        # Take the minimum loss for each logit across the two labels
+        loss_per_logit = torch.min(loss_1, loss_2)  # (B, K)
+
+        # Softmin over K logits
+        weights = F.softmax(-loss_per_logit / self.temperature, dim=1)  # (B, K)
+        softmin_loss = torch.sum(weights * loss_per_logit, dim=1)  # (B,)
+
+        return softmin_loss.mean()
+
+
+    @torch.no_grad()
+    def calculate_accuracy(self, logits, query_labels):
+        B, K, _ = logits.shape
+        total = B * K
+
+        # Predicted class index (B, K)
+        preds = torch.argmax(logits, dim=-1)
+
+        # Expand labels to shape (B, 1, 2) for broadcasting
+        label_set = query_labels.unsqueeze(1).expand(-1, K, -1)  # (B, K, 2)
+
+        # Check if prediction is in label_set
+        correct_mask = (preds.unsqueeze(-1) == label_set).any(dim=-1)  # (B, K)
+
+        correct = correct_mask.sum().item()
+
+        return correct, total

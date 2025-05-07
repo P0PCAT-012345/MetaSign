@@ -248,7 +248,7 @@ class EpisodicCollator:
         return episodic_collate_fn(batch, self.n_way, self.n_support, self.n_query)
 
 
-def get_meta_gloss_dataloader(dataset, n_way=10, n_support=3, n_query=3, num_episodes=100, 
+def get_meta_gloss_dataloader(dataset, n_way=10, n_support=3, n_query=3, num_episodes=500, 
                            num_workers=4, pin_memory=True):
     """
     Create a PyTorch DataLoader with custom episodic sampling.

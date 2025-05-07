@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from dataset import test_train_split, get_meta_gloss_dataloader, SignGlossDataset
 from model.model import SiFormerMeta, MetaLearning
-from model.utils import train_epoch, evaluate
+from model.utils import train_epoch, evaluate#, analyze
 from model.gaussian_noise import GaussianNoise
 
 
@@ -24,7 +24,10 @@ if __name__ == "__main__":
 
         
     parser = argparse.ArgumentParser(description="Main training script")
+    parser.add_argument("--mode", type=str, default='train', help="train, test, or analyze")
     parser.add_argument("--num_epochs", type=int, default=350)
+    parser.add_argument("--train_episodes", type=int, default=500)
+    parser.add_argument("--test_episodes", type=int, default=80)
     parser.add_argument("--path", type=str, default="dataset/preprocessed/WLASL/raw/", help="Dataset path")
     parser.add_argument("--save_at", type=str, default="checkpoints/", help="Save best model at path")
     parser.add_argument("--use_checkpoint", type=str, default="", help="Save best model at path")
@@ -56,8 +59,8 @@ if __name__ == "__main__":
     dataset = SignGlossDataset(dataset_dir=args.path, transform=transform, max_pad_len=300)
 
     train_dataset, test_dataset = test_train_split(dataset)
-    train_loader = get_meta_gloss_dataloader(train_dataset, interpolation_transform=interp_transform)
-    test_loader = get_meta_gloss_dataloader(test_dataset, interpolation_transform=interp_transform, num_episodes=20)
+    train_loader = get_meta_gloss_dataloader(train_dataset, interpolation_transform=interp_transform, num_episodes=args.train_episodes)
+    test_loader = get_meta_gloss_dataloader(test_dataset, interpolation_transform=interp_transform, num_episodes=args.test_episodes)
 
 
 
@@ -66,28 +69,36 @@ if __name__ == "__main__":
 
     if args.use_checkpoint:
         state_dict = torch.load(args.use_checkpoint)
-        model.load_state_dict(state_dict)
+        model.load_state_dict(state_dict, strict=False)
     optimizer = torch.optim.AdamW(model.parameters(), lr=0.0001, betas=(0.9, 0.999), weight_decay=1e-8)
     scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[60, 80], gamma=0.1)  # 40, 60, 80
 
-    curr_best = 0
-    for epoch in (pbar:=tqdm(range(num_epochs), desc="Currently training...", position=0)):
-        loss, train_accuracy = train_epoch(
-            model=model,
-            dataloader=train_loader,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            device=device,
-            output_progress=args.output_episode_progress
-        )
+    if args.mode == 'train':
+        curr_best = 0
+        for epoch in (pbar:=tqdm(range(num_epochs), desc="Currently training...", position=0)):
+            loss, train_accuracy = train_epoch(
+                model=model,
+                dataloader=train_loader,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                device=device,
+                output_progress=args.output_episode_progress
+            )
+            val_accuracy = evaluate(model=model, dataloader=test_loader, device=device, output_progress=args.output_episode_progress)
+
+            pbar.set_postfix({
+                "Loss": f"{loss:.4f}",
+                "Train Acc": f"{train_accuracy*100:.2f}%",
+                "Val Acc": f"{val_accuracy*100:.2f}%"
+            })
+
+            if val_accuracy >= curr_best:
+                curr_best = val_accuracy
+                torch.save(model.state_dict(), os.path.join(args.save_at, f"{epoch}_{val_accuracy}"))
+
+    elif args.mode == 'test':
         val_accuracy = evaluate(model=model, dataloader=test_loader, device=device, output_progress=args.output_episode_progress)
-
-        pbar.set_postfix({
-            "Loss": f"{loss:.4f}",
-            "Train Acc": f"{train_accuracy*100:.2f}%",
-            "Val Acc": f"{val_accuracy*100:.2f}%"
-        })
-
-        if val_accuracy >= curr_best:
-            curr_best = val_accuracy
-            torch.save(model.state_dict(), os.path.join(args.save_at, f"{epoch}_{train_accuracy}"))
+    
+    # elif args.mode == 'analyze':
+    #     acc = analyze(model=model, dataloader=test_loader, device=device, output_progress=args.output_episode_progress)
+    #     print(acc)

@@ -218,7 +218,7 @@ class MetaBatchSampler(torch_data.Sampler):
 
 
 class MetaCollator:
-    def __init__(self, n_way, n_support, n_query, max_words = 3, window_size: int = 400, stride = 50, transform: any = None, augmentations: bool = False, interpolation_length = (10, 30)):
+    def __init__(self, n_way, n_support, n_query, max_candidates = 3, window_size: int = 400, stride = 50, transform: any = None, augmentations: bool = False, interpolation_length = (10, 30)):
         self.n_way = n_way
         self.n_support = n_support
         self.n_query = n_query
@@ -226,7 +226,7 @@ class MetaCollator:
         self.stride = stride
         self.transform = transform
         self.augmentations = augmentations
-        self.max_words = max_words
+        self.max_candidates = max_candidates
         self.interpolation_length = interpolation_length
     
         # Define the collate function outside of any other function to make it picklable
@@ -279,7 +279,7 @@ class MetaCollator:
         l_support = torch.stack([l_hand_tensors[i] for i in support_indices])
         r_support = torch.stack([r_hand_tensors[i] for i in support_indices])
         b_support = torch.stack([body_tensors[i] for i in support_indices])
-        support_labels = torch.tensor([new_labels[i] for i in support_indices], dtype=torch.long)
+        support_labels = torch.tensor([original_labels[i] for i in support_indices], dtype=torch.long)
         
         # Create query set
         l_query = torch.stack([l_hand_tensors[i] for i in query_indices])
@@ -311,8 +311,7 @@ class MetaCollator:
         if not self.transform is None:
             data = self.transform(data)
         return data
-    
-    
+
 
     def create_sentence_episodes(self, l_depth_maps, r_depth_maps, body_depth_maps, labels, interpolation_length = (10, 30)):
 
@@ -345,9 +344,7 @@ class MetaCollator:
         sentence_labels = []
         for long_sentence_labels in labels_sentence_long:
             sentence_label = [long_sentence_labels[i] for i in range(len(long_sentence_labels)) if (i == 0 or long_sentence_labels[i] != long_sentence_labels[i-1]) and long_sentence_labels[i] != -1]
-            sentence_label = torch.stack(sentence_label[:self.max_words])
-            if len(sentence_label) < self.max_words:
-                sentence_label = torch.cat((sentence_label, torch.tensor([self.n_way] * (self.max_words - len(sentence_label)))))
+            sentence_label = torch.stack(sentence_label[:2])
             sentence_labels.append(sentence_label)
                
         sentence_labels = torch.stack(sentence_labels)
@@ -384,7 +381,7 @@ def test_train_split(dataset, unseen_ratio=0.2, seed=42):
     return seen_dataset, unseen_dataset
 
 
-def get_meta_gloss_dataloader(dataset, n_way=10, n_support=3, n_query=3, num_episodes=100, max_words=3, stride=50, interpolation_transform=None, interpolation_length=(10, 30),
+def get_meta_gloss_dataloader(dataset, n_way=10, n_support=3, n_query=3, num_episodes=100, max_candidates=3, stride=50, interpolation_transform=None, interpolation_length=(10, 30),
                            num_workers=4, pin_memory=True):
     """
     Create a PyTorch DataLoader with custom episodic sampling.
@@ -413,7 +410,7 @@ def get_meta_gloss_dataloader(dataset, n_way=10, n_support=3, n_query=3, num_epi
     # Create a picklable collate function using the EpisodicCollator class
     transform = interpolation_transform if interpolation_transform else dataset.transform
     
-    collate_fn = MetaCollator(n_way, n_support, n_query, window_size=dataset.max_seq_len, stride=stride, max_words=max_words, interpolation_length=interpolation_length, transform=transform, augmentations=dataset.augmentations)
+    collate_fn = MetaCollator(n_way, n_support, n_query, window_size=dataset.max_seq_len, stride=stride, max_candidates=max_candidates, interpolation_length=interpolation_length, transform=transform, augmentations=dataset.augmentations)
     
     # Create and return the DataLoader
     return torch_data.DataLoader(
