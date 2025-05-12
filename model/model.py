@@ -318,15 +318,15 @@ class AbsolutePE(nn.Module):
 #         return frame_pos
 
 
-class SiFormerMeta(nn.Module):
+class SiFormerEmbedder(nn.Module):
     """
     Implementation of the SPOTER (Sign POse-based TransformER) architecture for sign language recognition from sequence
     of skeletal data.
     """
 
-    def __init__(self, emb_dim, attn_type='prob', num_enc_layers=3, num_dec_layers=2, patience=1, max_class_per_input=5,
+    def __init__(self, emb_dim, attn_type='prob', num_enc_layers=3, num_dec_layers=2, patience=1, n_head=1,
                  seq_len=204, IA_encoder = True, IA_decoder = False, num_channels=3, num_hand_landmarks=21, num_body_landmarks=7, nhead_list=None):
-        super(SiFormerMeta, self).__init__()
+        super(SiFormerEmbedder, self).__init__()
         print("Feature isolated transformer")
         hand_d_model = num_hand_landmarks * num_channels
         body_d_model = num_body_landmarks * num_channels
@@ -338,8 +338,8 @@ class SiFormerMeta(nn.Module):
         self.r_hand_embedding = nn.Parameter(self.get_encoding_table(d_model=hand_d_model, seq_len=seq_len))
         self.body_embedding = nn.Parameter(self.get_encoding_table(d_model=body_d_model, seq_len=seq_len))
 
-        self.max_class_per_input = max_class_per_input
-        self.class_queries = nn.Parameter(torch.rand(self.max_class_per_input, 1, num_hid))
+        self.n_head = n_head
+        self.class_queries = nn.Parameter(torch.rand(self.n_head, 1, num_hid))
         self.transformer = FeatureIsolatedTransformer(
             [hand_d_model, hand_d_model, body_d_model], nhead_list, num_encoder_layers=num_enc_layers, num_decoder_layers=num_dec_layers,
             selected_attn=attn_type, IA_encoder=IA_encoder, IA_decoder=IA_decoder,
@@ -347,10 +347,8 @@ class SiFormerMeta(nn.Module):
             patience=patience, use_pyramid_encoder=False, distil=False
         )
         print(f"num_enc_layers {num_enc_layers}, num_dec_layers {num_dec_layers}, patient {patience}")
-        self.projection = nn.Sequential(
-            nn.Linear(num_hid, emb_dim),
-            nn.LayerNorm(emb_dim)
-        )
+
+        
 
     def forward(self, l_hand, r_hand, body):
         batch_size = l_hand.size(0)
@@ -381,11 +379,10 @@ class SiFormerMeta(nn.Module):
 
         repeated_queries = self.class_queries.repeat(1, batch_size, 1)
 
-        transformer_output = self.transformer(
+        out = self.transformer(
             [l_hand_in, r_hand_in, body_in], repeated_queries, src_key_padding_mask=src_key_padding_mask  # (B, T) mask
-        ).transpose(0, 1)  # (B, num_signs, hidden_dim)
+        ).transpose(0, 1)  # (B, n_head, hidden_dim)
 
-        out = self.projection(transformer_output)  # (num_signs, B, emb_dim)
         return out
 
     @staticmethod
@@ -400,83 +397,135 @@ class SiFormerMeta(nn.Module):
         return frame_pos
 
 
-def pairwise_distances(x, y):
-    # x: (N, D), y: (M, D)
-    n = x.size(0)
-    m = y.size(0)
-    d = x.size(1)
-    x = x.unsqueeze(1).expand(n, m, d)
-    y = y.unsqueeze(0).expand(n, m, d)
-    return torch.norm(x - y, dim=2)
+class MetaSign(nn.Module):
+    def __init__(self, emb_dim, attn_type='prob', num_enc_layers=3, num_dec_layers=2, patience=1,
+                 seq_len=204, IA_encoder = True, IA_decoder = False, num_channels=3, num_hand_landmarks=21, num_body_landmarks=7, nhead_list=None):
+        super(MetaSign, self).__init__()
+
+        self.siformer = SiFormerEmbedder(emb_dim=emb_dim, attn_type=attn_type, num_enc_layers=num_enc_layers, num_dec_layers=num_dec_layers, patience=patience,
+                                         n_head=1, seq_len=seq_len, IA_encoder=IA_encoder, IA_decoder=IA_decoder, num_channels=num_channels, num_hand_landmarks=num_hand_landmarks, num_body_landmarks=num_body_landmarks, nhead_list=nhead_list)
+        hand_d_model = num_hand_landmarks * num_channels
+        body_d_model = num_body_landmarks * num_channels
+        num_hid = hand_d_model*2 + body_d_model
+
+        self.single_class_projection = nn.Sequential(
+            nn.Linear(num_hid, num_hid),
+            nn.Linear(num_hid, emb_dim),
+            nn.LayerNorm(emb_dim)
+        )
+
+        self.live_projection = nn.Sequential(
+            nn.Linear(num_hid, num_hid),
+            nn.Linear(num_hid, emb_dim),
+            nn.LayerNorm(emb_dim)
+        )
+
+    def forward(self, l_hand, r_hand, body):
+        emb = self.siformer(l_hand, r_hand, body)
+        out = self.live_projection(emb)
+        return out
+    
+    def get_class_embedding(self, l_hand, r_hand, body):
+        emb = self.siformer(l_hand, r_hand, body)
+        out = self.single_class_projection(emb)
+        return out
+
+
 
 class MetaLearning(nn.Module):
     """
     Custom meta-learning framework in sign language recognition.
     """
-
-    def __init__(self, backbone, n_support = 3, n_query = 3, n_way = 10, max_candidates = 3):
+    def __init__(self, backbone, n_support = 3, n_way = 10):
         super(MetaLearning, self).__init__()
         self.backbone = backbone
         self.n_support = n_support
-        self.n_query = n_query
         self.n_way = n_way
-        self.max_candidates = max_candidates
         self.temperature = 0.1
     
 
     def forward(self, l_support, r_support, b_support, l_query, r_query, b_query):
+        support_embeddings = self.backbone.get_class_embedding(l_support, r_support, b_support).view(self.n_way, self.n_support, -1)
+        emb_dim = support_embeddings.shape[-1]
+        query_embeddings = self.backbone(l_query, r_query, b_query).view(-1, emb_dim)
 
-        support_embeddings = self.backbone(l_support, r_support, b_support)
-        support_embeddings = support_embeddings[:, 0, :]
+        return support_embeddings, query_embeddings #(n_way, n_support, emb_dim), (batch_size, emb_dim)
 
-        prototypes = torch.mean(support_embeddings.view(self.n_way, self.n_support, -1), dim=1)
-
-        query_embeddings = self.backbone(l_query, r_query, b_query) # (K, words, emb_dim)
-
-        K, *_ = query_embeddings.shape
-        dists = pairwise_distances(query_embeddings.view(K*self.max_candidates, -1), prototypes)
-
-        logits = -dists.view(K, self.max_candidates, -1)
-
-        return logits
+    def get_prototypes(self, support_embeddings):
+        prototypes = support_embeddings.mean(dim=1)  # (n_way, emb_dim)
+        return prototypes
     
-    def calculate_loss(self, logits, query_labels):
-        B, K, C = logits.shape
+    def calculate_contrastive_loss(self, prototypes, support_embeddings, margin=1.0):
+        """
+        Class-center-based contrastive loss.
+        Args:
+            support_embeddings: Tensor of shape (n_way, n_support, emb_dim)
+            margin: Float. Margin for inter-class contrastive loss.
+        Returns:
+            Scalar tensor: contrastive loss
+        """
+        n_way, n_support, emb_dim = support_embeddings.shape
+        device = support_embeddings.device
 
-        log_probs = F.log_softmax(logits, dim=-1)  # (B, K, C)
+        # Intra-class loss: distance from each support sample to its class center
+        expanded_centers = prototypes.unsqueeze(1).expand(-1, n_support, -1)  # (n_way, n_support, emb_dim)
+        intra_dists = F.pairwise_distance(
+            support_embeddings.contiguous().view(-1, emb_dim),
+            expanded_centers.contiguous().view(-1, emb_dim)
+        )
+        intra_loss = intra_dists.mean()
 
-        # Compute CE loss to each label separately
-        label_1 = query_labels[:, 0].unsqueeze(1).expand(-1, K)  # (B, K)
-        label_2 = query_labels[:, 1].unsqueeze(1).expand(-1, K)  # (B, K)
+        # Inter-class loss: margin-based contrast between class centers
+        pdist_centers = torch.cdist(prototypes, prototypes, p=2)  # (n_way, n_way)
+        mask = ~torch.eye(n_way, dtype=torch.bool, device=device)
+        inter_dists = pdist_centers[mask]  # exclude diagonal (same class)
+        inter_loss = F.relu(margin - inter_dists).mean()
 
-        # Gather NLL loss for each label
-        loss_1 = F.nll_loss(log_probs.view(-1, C), label_1.flatten(), reduction='none').view(B, K)
-        loss_2 = F.nll_loss(log_probs.view(-1, C), label_2.flatten(), reduction='none').view(B, K)
-
-        # Take the minimum loss for each logit across the two labels
-        loss_per_logit = torch.min(loss_1, loss_2)  # (B, K)
-
-        # Softmin over K logits
-        weights = F.softmax(-loss_per_logit / self.temperature, dim=1)  # (B, K)
-        softmin_loss = torch.sum(weights * loss_per_logit, dim=1)  # (B,)
-
-        return softmin_loss.mean()
-
+        return intra_loss + inter_loss
+    
+    
+    def calculate_prediction_loss(self, prototypes, query_embeddings, query_labels):
+        # prototypes: (n_way, emb_dim)
+        # query_embeddings: (batch_size, emb_dim)
+        # query_labels: (batch_size,)
+        # Compute distances: (batch_size, n_way)
+        dists = torch.cdist(query_embeddings, prototypes)  # (batch_size, n_way)
+        loss = F.cross_entropy(-dists, query_labels)
+        return loss
+    
+    def calculate_loss(self, support_embeddings, query_embeddings, query_labels, alpha=1.0):
+        prototypes = self.get_prototypes(support_embeddings)
+        contrastive_loss = self.calculate_contrastive_loss(prototypes, support_embeddings)
+        prediction_loss = self.calculate_prediction_loss(prototypes, query_embeddings, query_labels)
+        return prediction_loss + alpha * contrastive_loss
 
     @torch.no_grad()
-    def calculate_accuracy(self, logits, query_labels):
-        B, K, _ = logits.shape
-        total = B * K
+    def calculate_accuracy(self, support_embeddings, query_embeddings, query_labels):
+        prototypes = self.get_prototypes(support_embeddings)
+        # Compute pairwise distances (Euclidean)
+        dists = torch.cdist(query_embeddings, prototypes)  # (batch_size, n_way)
 
-        # Predicted class index (B, K)
-        preds = torch.argmax(logits, dim=-1)
+        # Convert distances to logits by negating (closer distance = higher logit)
+        logits = -dists / self.temperature
 
-        # Expand labels to shape (B, 1, 2) for broadcasting
-        label_set = query_labels.unsqueeze(1).expand(-1, K, -1)  # (B, K, 2)
+        # Predicted class = argmax over logits
+        preds = torch.argmax(logits, dim=1)
 
-        # Check if prediction is in label_set
-        correct_mask = (preds.unsqueeze(-1) == label_set).any(dim=-1)  # (B, K)
-
-        correct = correct_mask.sum().item()
-
-        return correct, total
+        # Compare to ground truth labels
+        correct = (preds == query_labels).sum().item()
+        total = query_labels.size(0)
+        
+        return total, correct
+    
+    def calculate_loss_and_accuracy(self, support_embeddings, query_embeddings, query_labels, alpha=0.3):
+        prototypes = self.get_prototypes(support_embeddings)
+        contrastive_loss = self.calculate_contrastive_loss(prototypes, support_embeddings)
+        prediction_loss = self.calculate_prediction_loss(prototypes, query_embeddings, query_labels)
+        loss = prediction_loss + alpha * contrastive_loss
+        with torch.no_grad():
+            dists = torch.cdist(query_embeddings, prototypes)
+            logits = -dists / self.temperature
+            preds = torch.argmax(logits, dim=1)
+            correct = (preds == query_labels).sum().item()
+            total = query_labels.size(0)
+        return loss, total, correct

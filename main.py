@@ -12,7 +12,7 @@ from torchvision import transforms
 from tqdm import tqdm
 
 from dataset import test_train_split, get_meta_gloss_dataloader, SignGlossDataset
-from model.model import SiFormerMeta, MetaLearning
+from model.model import MetaSign, MetaLearning
 from model.utils import train_epoch, evaluate#, analyze
 from model.gaussian_noise import GaussianNoise
 
@@ -64,7 +64,7 @@ if __name__ == "__main__":
 
 
 
-    backbone = SiFormerMeta(emb_dim=128, seq_len=300, max_class_per_input=3)
+    backbone = MetaSign(emb_dim=128, seq_len=300)
     model = MetaLearning(backbone).to(device)
 
     if args.use_checkpoint:

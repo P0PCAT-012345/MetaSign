@@ -344,8 +344,7 @@ class MetaCollator:
         sentence_labels = []
         for long_sentence_labels in labels_sentence_long:
             sentence_label = [long_sentence_labels[i] for i in range(len(long_sentence_labels)) if (i == 0 or long_sentence_labels[i] != long_sentence_labels[i-1]) and long_sentence_labels[i] != -1]
-            sentence_label = torch.stack(sentence_label[:2])
-            sentence_labels.append(sentence_label)
+            sentence_labels.append(sentence_label[1])
                
         sentence_labels = torch.stack(sentence_labels)
 

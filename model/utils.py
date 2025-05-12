@@ -126,10 +126,10 @@ def train_epoch(model, dataloader, optimizer, device, scheduler=None, output_pro
         l_support, r_support, b_support, support_labels, l_query, r_query, b_query, query_labels = [d.to(device) for d in data]
         optimizer.zero_grad()
 
-        logits = model(l_support, r_support, b_support, l_query, r_query, b_query)
+        support_embeddings, query_embeddings = model(l_support, r_support, b_support, l_query, r_query, b_query)
 
-        loss = model.calculate_loss(logits, query_labels)
-        c, t = model.calculate_accuracy(logits, query_labels)
+        loss, t, c = model.calculate_loss_and_accuracy(support_embeddings, query_embeddings, query_labels)
+
         correct += c
         total += t
 
@@ -153,8 +153,8 @@ def evaluate(model, dataloader, device, output_progress=True):
     for i, data in pbar:
         l_support, r_support, b_support, support_labels, l_query, r_query, b_query, query_labels = [d.to(device) for d in data]
 
-        logits = model(l_support, r_support, b_support, l_query, r_query, b_query)
-        c, t = model.calculate_accuracy(logits, query_labels)
+        support_embeddings, query_embeddings = model(l_support, r_support, b_support, l_query, r_query, b_query)
+        t, c = model.calculate_accuracy(support_embeddings, query_embeddings, query_labels)
         correct += c
         total += t
         
